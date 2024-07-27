@@ -1,8 +1,9 @@
 import os
 import pandas as pd
 from torchvision import transforms
-from torch.utils.data import Dataset
+from torch.utils.data import DataLoader, Dataset
 from PIL import Image
+import torch
 import torch.nn as nn
 from transformers import ViTForImageClassification, ViTFeatureExtractor, TrainingArguments, Trainer, DefaultDataCollator
 from sklearn.metrics import classification_report
@@ -49,15 +50,28 @@ class SkinCancerDataset(Dataset):
 
         return {"pixel_values": image, "labels": label}
 
-# Define transformations
+# Define transformations with data augmentation
 transform = transforms.Compose([
+    transforms.Resize((224, 224)),
+    transforms.RandomHorizontalFlip(),
+    transforms.RandomVerticalFlip(),
+    transforms.RandomRotation(10),
+    transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.2),
+    transforms.RandomResizedCrop(224, scale=(0.8, 1.0)),
+    transforms.RandomApply([transforms.GaussianBlur(kernel_size=3)]),  # Add Gaussian Blur
+    transforms.ToTensor(),
+    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+])
+
+# Apply the same transform to the test dataset but without augmentations
+test_transform = transforms.Compose([
     transforms.Resize((224, 224)),
     transforms.ToTensor(),
     transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
 ])
 
 train_dataset = SkinCancerDataset(root_dir=train_path, transform=transform)
-test_dataset = SkinCancerDataset(root_dir=test_path, transform=transform)
+test_dataset = SkinCancerDataset(root_dir=test_path, transform=test_transform)
 
 # Load pre-trained ViT model
 model = ViTForImageClassification.from_pretrained(
@@ -131,6 +145,12 @@ trainer.train()
 results = trainer.evaluate()
 print(results)
 
+# Function to reverse normalization
+def reverse_normalize(tensor, mean, std):
+    mean = torch.tensor(mean).reshape(1, 3, 1, 1)
+    std = torch.tensor(std).reshape(1, 3, 1, 1)
+    return tensor * std + mean
+
 # Generate detailed evaluation report
 def evaluate_model(trainer, test_dataset_hf):
     # Get predictions
@@ -151,10 +171,13 @@ def evaluate_model(trainer, test_dataset_hf):
     incorrect_preds = np.where(preds != labels)[0]
 
     def save_examples(indices, prefix):
-        for i in indices[:10]:  # Save first 5 examples
+        for i in indices[:10]:  # Save first 10 examples
             img_path = test_dataset.images[i]
             img = Image.open(img_path)
-            plt.imshow(img)
+            img_tensor = transform(img).unsqueeze(0)
+            img_tensor = reverse_normalize(img_tensor, mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+            img_tensor = img_tensor.squeeze().permute(1, 2, 0).numpy()
+            plt.imshow(img_tensor)
             plt.title(f"True: {labels[i]}, Pred: {preds[i]}")
             plt.savefig(f"{prefix}_example_{i}.png")
             plt.close()
